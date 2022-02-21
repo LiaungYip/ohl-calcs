@@ -1,0 +1,13 @@
+t_a,t_c,v,weathering,time_of_day,description
+10.0,50.0,0.0,rural,winter night,Rural - Winter night - still
+10.0,50.0,1.0,rural,winter night,Rural - Winter night - 1m/s
+10.0,50.0,2.0,rural,winter night,Rural - Winter night - 2m/s
+35.0,75.0,0.0,rural,summer noon,Rural - Summer noon - still
+35.0,75.0,1.0,rural,summer noon,Rural - Summer noon - 1m/s
+35.0,75.0,2.0,rural,summer noon,Rural - Summer noon - 2m/s
+10.0,50.0,0.0,industrial,winter night,Industrial - Winter night - still
+10.0,50.0,1.0,industrial,winter night,Industrial - Winter night - 1m/s
+10.0,50.0,2.0,industrial,winter night,Industrial - Winter night - 2m/s
+35.0,75.0,0.0,industrial,summer noon,Industrial - Summer noon - still
+35.0,75.0,1.0,industrial,summer noon,Industrial - Summer noon - 1m/s
+35.0,75.0,2.0,industrial,summer noon,Industrial - Summer noon - 2m/s
