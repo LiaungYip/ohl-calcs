@@ -81,241 +81,234 @@
 
 from math import sqrt, sin, pi
 
-# Example 1 from ENA D(b)5.
-# Expected result: I_wind = 165 amps.
-inputs = {
-    "conductor_name": "Almond",
-    "weathering": "rural",
-    "time_of_day": "winter night",
-    "t_a": 10,
-    "t_c": 100,
-    "R_dc": 0.975 * 10 ** -3,  # ohm/m
-    "α": 0.00403,  # 1/K
-    "D": 7.5 * 10 ** -3,  # m
-    "v": 1.0, #m/s
-    "conductor_type": "ACSR",
-    "layer_construction": "6/1 (< 3.0mm)",
-}
-
-# Example 2 from ENA D(b)5.
-# Expected result: I_wind = 732 amps.
-inputs = {
-    "conductor_name": "Saturn",
-    "weathering": "industrial",
-    "time_of_day": "summer noon",
-    "t_a": 35,
-    "t_c": 85,
-    "R_dc": 0.1100 * 10 ** -3,  # ohm/m
-    "α": 0.00403,  # 1/K
-    "D": 21 * 10 ** -3,  # m
-    "v": 1.0, # m/a
-    "conductor_type": "AAC",
-    "layer_construction": "37",
-}
-
-
-# a = solar absorption coefficient
-# = 0.5 for rural weathered conductor
-# = 0.85 for industrial weathered conductor
-if inputs["weathering"] == "rural":
-    a = 0.5
-elif inputs["weathering"] == "industrial":
-    a = 0.85
-else:
-    raise ValueError
-
-# D = diameter of conductor (m)
-D = inputs["D"]
-if D > 0.0338:
-    raise ValueError  # A conductor diameter greater than 33.8mm (the largest conductor in the Olex catalog) is probably an error.
-
-# e = emissivity of conductor
-#
-# Note: seems to be same as "a".
-if inputs["weathering"] == "rural":
-    e = 0.5
-elif inputs["weathering"] == "industrial":
-    e = 0.85
-else:
-    raise ValueError
+# Constants
 
 # F = Albedo (ground reflectance)
-
 F = 0.2
 
 # g = acceleration due to gravity, 9.81 m/s²
 g = 9.81
 
-# v = transverse wind velocity (m/s)
-v = inputs["v"]
-if v < 0.0 or v > 3.0:
-    raise ValueError  # Wind speed should be between 0 m/s and 3 m/s typically
-
-# α = Temperature coefficient of resistance at 20°C (units 1/K)
-α = inputs["α"]
-
 # σ = Stefan-Boltzmann constant = 5.67 * 10 ^ -8 (W/m² K^4)
 σ = 5.67 * 10 ** -8
 
 # ψ = Angle of attack of the wind relative to conductor axis (degrees)
-#
 # Note: Assume ψ = 90 degrees.
 # As per ENA D(b)5 section 4.4 "Air Movement" - "... practice tends to indicate
 # that current ratings based on transverse flow are satisfactory."
-
 ψ = 90
 
 # pi
-
 π = pi
 
-# t_a = ambient temperature (°C)
-# 35°C for summer noon time
-# 10°C for winter night time
-#
-# Note we take this as a input parameter (to allow various ambient temperatures - i.e. 45°C for North West Queensland.)
 
-t_a = inputs["t_a"]
-# TODO: Insert sanity check of ambient temperature vs summer noon / winter night conditions.
+class Conductor:
+    def __init__(self, name, conductor_type, nominal_overall_diameter, dc_resistance_at_20C, layer_construction=None):
 
-# t_c = Conductor maximum operating temperature (°C)
-t_c = inputs["t_c"]
-# TODO: Insert sanity check that max operating temperature is in a sensible range 75°C - 100°C.
+        assert conductor_type in (
+            "AAC", "AAAC/1120", "HDCU", "ACSR/GZ", "ACSR/AC", "SC/GZ", "SC/AC", "AACSR/GZ", "AACSR/AC",)
 
-# t_d = sky temperature (°C)
-t_d = 0.0552 * (t_a + 273) ** 1.5 - 273
+        # "Layer construction" specifies number of aluminium strands vs. steel strands and is only relevant for
+        # conductors that have both aluminium and steel (i.e. ACSR). Affects calculation of AC resistance.
+        if "ACSR" in conductor_type:
+            assert layer_construction in (
+                "4/3", "3/4", "6/7", "6/1(>=3.0mm)", "6/1(<3.0mm)", "30/7", "54/7", "54/19",)
+        else:
+            assert layer_construction is None
 
-# t_g = ground temperature (°C)
-# = t_a + 5°C for summer noon conditions
-# = t_a - 5°C for winter night conditions
+        # A conductor diameter greater than 49.5mm (the largest conductor in the Olex catalog) is probably an error.
+        assert 0.0 < nominal_overall_diameter <= 0.0495
 
-if inputs["time_of_day"] == "summer noon":
-    t_g = t_a + 5
-elif inputs["time_of_day"] == "winter night":
-    t_g = t_a - 5
+        self.conductor_name = name
+        self.conductor_type = conductor_type
+        self.D = nominal_overall_diameter  # D = diameter of conductor (m)
+        self.R_dc = dc_resistance_at_20C  # Conductor d.c. resistance at 20°C (ohm/m)
+        self.layer_construction = layer_construction
 
-# ν_f = viscosity of the air film (m²/s)
+        # k = Factor allowing for effective increase in d.c. resistance due to the skin effect, hysteresis and eddy
+        # current losses
+        # k_s = skin effect ratio
+        #
+        # Notes from ENA D(b)5 section 4.6:
+        #
+        # "... The value of k_s is dependent on conductor size. For the purpose of the
+        # document the value of 1.015 is considered appropriate."
+        k_s = 1.015
+        # k_m = magnetic effect ratio
+        if "ACSR" in self.conductor_type:
+            layer_constructions = {
+                "4/3": 1.1,
+                "3/4": 1.06,
+                "6/7": 1.13,
+                "6/1(>=3.0mm)": 1.10,
+                "6/1(<3.0mm)": 1.07,
+                "30/7": 1.00,
+                "54/7": 1.06,
+                "54/19": 1.07,
+            }
+            _l = self.layer_construction
+            assert _l in layer_constructions.keys()
+            k_m = layer_constructions[_l]
+        else:
+            k_m = 1.00
+        self.k = k_s * k_m
 
-ν_f = 1.32 * 10 ** -5 + 9.5 * 10 ** -8 * (t_c + t_a) / 2
+        # α = Temperature coefficient of resistance at 20°C (units 1/K)
+        # From Prysmian catalog:
+        α_table = {
+            "AAC": 0.00403,
+            "ACSR/GZ": 0.00403,  # Assume as per AAC
+            "ACSR/AC": 0.00403,  # Assume as per AAC
+            "AAAC/1120": 0.00390,
+            "SC/GZ": 0.0044,
+            "SC/AC": 0.0036,
+            "HDCU": 0.00381,
+            "AACSR/GZ": 0.00390,  # Assume as per AAAC 1120
+            "AACSR/AC": 0.00390,  # Assume as per AAAC 1120
+        }
+        self.α = α_table[self.conductor_type]
 
-# λ_f = thermal conductivity of the air film (W/m.K)
+    def calc(self, t_a, t_c, v, weathering, time_of_day):
+        # t_a = ambient temperature (°C)
+        # 35°C for summer noon time
+        # 10°C for winter night time
+        #
+        # Note we take this as a input parameter (to allow various ambient temperatures - i.e. 45°C for North West Queensland.)
+        assert 0 <= t_a <= 50
 
-λ_f = 2.42 * 10 ** -2 + 7.2 * 10 ** -5 * (t_c + t_a) / 2
+        # t_c = Conductor maximum operating temperature (°C)
+        assert 50 <= t_c <= 100
 
-# Grashof number
-Gr_numerator = D ** 3 * g * (t_c - t_a)
-Gr_denominator = (((t_c + t_a) / 2) + 273) * ν_f ** 2
-Gr = Gr_numerator / Gr_denominator
+        # v = transverse wind velocity (m/s)
+        # Wind speed should be between 0 m/s and 3 m/s typically
+        assert 0.0 <= v <= 3.0
 
-# Pr = Prantdl number
-Pr = 0.715 - 2.5 * 10 ** -4 * (t_c + t_a) / 2
+        # a = solar absorption coefficient
+        # = 0.5 for rural weathered conductor
+        # = 0.85 for industrial weathered conductor
+        if weathering == "rural":
+            a = 0.5
+        elif weathering == "industrial":
+            a = 0.85
+        else:
+            raise ValueError
 
-# Re = Reynolds Number
-Re = v * D / ν_f
+        # e = emissivity of conductor
+        # Note: seems to be same as "a".
+        if weathering == "rural":
+            e = 0.5
+        elif weathering == "industrial":
+            e = 0.85
+        else:
+            raise ValueError
 
-# A and m are constants dependent on the value of (Gr * Pr):
-if Gr * Pr <= 10 ** 4:
-    A = 0.850
-    m = 0.188
-else:
-    A = 0.480
-    m = 0.250
+        # t_d = sky temperature (°C)
+        t_d = 0.0552 * (t_a + 273) ** 1.5 - 273
 
-# B and n are constants dependent on the value of Re:
-if Re <= 2650:
-    B = 0.641
-    n = 0.471
-else:
-    B = 0.048
-    n = 0.800
+        # t_g = ground temperature (°C)
+        # = t_a + 5°C for summer noon conditions
+        # = t_a - 5°C for winter night conditions
 
-# C and P are constants dependent on the angle:
-# (angle ψ, in degrees)
+        if time_of_day == "summer noon":
+            t_g = t_a + 5
+        elif time_of_day == "winter night":
+            t_g = t_a - 5
 
-if 0 <= ψ and ψ <= 24:
-    C = 0.68
-    P = 1.08
-elif 24 < ψ and ψ <= 90:
-    C = 0.58
-    P = 0.90
-else:
-    raise ValueError
+        # ν_f = viscosity of the air film (m²/s)
 
-# I_dir = 1,000 W/m² for direct solar radiation intensity
-# I_diff = 100 W/m² for diffuse solar radiation intensity
-# I_dir and I_diff = 0 for night time conditions
+        ν_f = 1.32 * 10 ** -5 + 9.5 * 10 ** -8 * (t_c + t_a) / 2
 
-if inputs["time_of_day"] == "summer noon":
-    I_dir = 1000
-    I_diff = 100
-elif inputs["time_of_day"] == "winter night":
-    I_dir = 0
-    I_diff = 0
-else:
-    raise ValueError
+        # λ_f = thermal conductivity of the air film (W/m.K)
 
-# k = Factor allowing for effective increase in d.c. resistance due to the skin effect, hysteresis and eddy current losses
+        λ_f = 2.42 * 10 ** -2 + 7.2 * 10 ** -5 * (t_c + t_a) / 2
 
-# k_s = skin effect ratio
-#
-# Notes from ENA D(b)5 section 4.6:
-#
-# "... The value of k_s is dependent on conductor size. For the purpose of the
-# document the value of 1.015 is considered appropriate."
-k_s = 1.015
+        # Grashof number
+        Gr_numerator = self.D ** 3 * g * (t_c - t_a)
+        Gr_denominator = (((t_c + t_a) / 2) + 273) * ν_f ** 2
+        Gr = Gr_numerator / Gr_denominator
 
-# k_m = magnetic effect ratio
-if "ACSR" in inputs["conductor_type"]:
-    layer_constructions = {
-        "4/3": 1.1,
-        "3/4": 1.06,
-        "6/7": 1.13,
-        "6/1 (>= 3.0mm)": 1.10,
-        "6/1 (< 3.0mm)": 1.07,
-        "30/7": 1.00,
-        "54/7": 1.06,
-        "54/19": 1.07,
-    }
-    _l = inputs["layer_construction"]
-    assert _l in layer_constructions.keys()
-    k_m = layer_constructions[_l]
-else:
-    k_m = 1.00
+        # Pr = Prantdl number
+        Pr = 0.715 - 2.5 * 10 ** -4 * (t_c + t_a) / 2
 
-k = k_s * k_m
+        # Re = Reynolds Number
+        Re = v * self.D / ν_f
 
-# m = see "A"
+        # A and m are constants dependent on the value of (Gr * Pr):
+        if Gr * Pr <= 10 ** 4:
+            A = 0.850
+            m = 0.188
+        else:
+            A = 0.480
+            m = 0.250
 
-# n = see "B"
+        # B and n are constants dependent on the value of Re:
+        if Re <= 2650:
+            B = 0.641
+            n = 0.471
+        else:
+            B = 0.048
+            n = 0.800
 
-# Nu = Nusselt number
+        # C and P are constants dependent on the angle:
+        # (angle ψ, in degrees)
 
-Nu = A * (Gr * Pr) ** m
+        if 0 <= ψ <= 24:
+            C = 0.68
+            P = 1.08
+        elif 24 < ψ <= 90:
+            C = 0.58
+            P = 0.90
+        else:
+            raise ValueError
 
-# P = see "C"
+        # I_dir = 1,000 W/m² for direct solar radiation intensity
+        # I_diff = 100 W/m² for diffuse solar radiation intensity
+        # I_dir and I_diff = 0 for night time conditions
 
-# PF = Power loss by forced convection (Watts/metre)
-sin_ψ = sin(ψ * π / 180)  # note degrees -> radians conversion
-PF = π * λ_f * (t_c - t_a) * B * (Re ** n) * (0.42 + C * (sin_ψ ** P))
+        if time_of_day == "summer noon":
+            I_dir = 1000
+            I_diff = 100
+        elif time_of_day == "winter night":
+            I_dir = 0
+            I_diff = 0
+        else:
+            raise ValueError
 
-# PN = Power loss by natural convection (Watts/metre)
-PN = π * λ_f * (t_c - t_a) * Nu
+        # m = see "A"
 
-# PR = Power loss by radiation (Watts/metre)
-t_c_K = t_c + 273  # Celsius -> Kelvin
-t_g_K = t_g + 273
-t_d_K = t_d + 273
-PR = π * D * σ * e * (t_c_K ** 4 - 0.5 * t_g_K ** 4 - 0.5 * t_d_K ** 4)
+        # n = see "B"
 
-# PS = Power gain by solar heat input (Watts/metre)
-PS = a * D * (I_dir * (1 + π / 2 * F) + π / 2 * I_diff * (1 + F))
+        # Nu = Nusselt number
 
-# R_dc = Conductor d.c. resistance at 20°C (ohm/m)
-R_dc = inputs["R_dc"]
+        Nu = A * (Gr * Pr) ** m
 
-# r_ac = effective a.c. resistance
-r_ac = (k * R_dc * (1 + α * (t_c - 20)))
+        # P = see "C"
 
-I_wind = sqrt((PR + PF - PS) / r_ac)
+        # PF = Power loss by forced convection (Watts/metre)
+        sin_ψ = sin(ψ * π / 180)  # note degrees -> radians conversion
+        PF = π * λ_f * (t_c - t_a) * B * (Re ** n) * (0.42 + C * (sin_ψ ** P))
 
-I_still = sqrt((PR + PN - PS) / r_ac)
+        # PN = Power loss by natural convection (Watts/metre)
+        PN = π * λ_f * (t_c - t_a) * Nu
+
+        # PR = Power loss by radiation (Watts/metre)
+        t_c_K = t_c + 273  # Celsius -> Kelvin
+        t_g_K = t_g + 273
+        t_d_K = t_d + 273
+        PR = π * self.D * σ * e * (t_c_K ** 4 - 0.5 * t_g_K ** 4 - 0.5 * t_d_K ** 4)
+
+        # PS = Power gain by solar heat input (Watts/metre)
+        PS = a * self.D * (I_dir * (1 + π / 2 * F) + π / 2 * I_diff * (1 + F))
+
+        # r_ac = effective a.c. resistance
+        k = self.k
+        α = self.α
+        R_dc = self.R_dc
+        r_ac = (k * R_dc * (1 + α * (t_c - 20)))
+
+        if v > 0:
+            I_wind = sqrt((PR + PF - PS) / r_ac)
+            return I_wind
+        else:
+            I_still = sqrt((PR + PN - PS) / r_ac)
+            return I_still
